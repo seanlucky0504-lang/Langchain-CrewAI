@@ -159,7 +159,23 @@ flowchart LR
   - **可观察性**：消息总线可以集中记录请求/延迟/错误；
   - **可扩展**：新增数据源只需在 MCP Server 增加 Connector 与 channel 映射，不影响调用方。
 
-### 5.3 Agentic RAG 策略
+### 5.3 可直接运行的本地 MCP Server 示例
+- 位置：`mcp/server.py`
+- 能力：
+  - `market` channel: 调用 Yahoo Finance（`yfinance`）拉取历史行情，返回 JSON（包含 `symbol/source/data`）。
+  - `document` channel: 通过 HTTP(S) 抓取文件并返回 base64 内容（便于上游 OCR/ASR 处理）。
+- 传输：遵循示例 Envelope `{channel, message: {action, params/uri}}`，通过 WebSocket 提供 request/reply。
+- 启动：
+  ```bash
+  # 安装依赖
+  pip install -r requirements.txt
+
+  # 启动本地 MCP Server（默认 ws://0.0.0.0:8765）
+  python -m mcp.server
+  ```
+- 自定义：如需接入 Bloomberg/新闻 RSS/S3，可在 `MCPServer.dispatch` 中增加新 `channel` 或扩展 `MarketConnector` / `DocumentConnector`，保持 envelope 不变即可兼容现有客户端。
+
+### 5.4 Agentic RAG 策略
 - 动态检索：问题路由技术/基本面/情绪，压缩检索减少噪声；图谱节点可扩展到关系检索。
 - 防幻觉：证据必须带来源/时间戳，Prompt 强制 Unknown，关键数值可二次校验（未在示例中执行，可按需扩展）。
 
@@ -177,14 +193,15 @@ flowchart LR
 ## 7. 运行指南（DeepSeek + MCP）
 1. 安装依赖（示例）：
    ```bash
-   pip install langchain langchain-openai crewai mcp httpx websockets pdfminer.six pillow pytesseract pandas numpy chromadb matplotlib
+   pip install -r requirements.txt
    ```
 2. 配置环境变量 `.env`：
    ```bash
    export DEEPSEEK_API_KEY="sk-..."
-   export MCP_BUS_URL="wss://mcp-bus.example.com"
+   # 本地测试可直接用示例 MCP Server
+   export MCP_BUS_URL="ws://localhost:8765"
    ```
-3. 启动 MCP 消息总线与工具型 Agent（行情、文档/OCR/ASR）。
+3. 启动 MCP 消息总线与工具型 Agent（行情、文档/OCR/ASR）。若无现成总线，可先运行 `python -m mcp.server` 使用内置示例。
 4. 运行示例：
    ```bash
    python scripts/run_demo.py
