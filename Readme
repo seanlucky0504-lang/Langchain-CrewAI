@@ -1,1 +1,171 @@
-BEGIN
+# 多智能体智能金融分析系统（LangChain + CrewAI + MCP）设计与代码示例
+
+> 面向采用 DeepSeek API 的多模态金融分析与投研场景，展示从数据采集、预处理、智能体协作、RAG 知识库构建到可视化与报告生成的完整方案，并提供可执行的 Python 参考代码。
+
+## 1. 场景背景与目标
+- **背景**：投资公司希望构建一套自动化的多模态投研系统，融合实时行情、舆情新闻、财报 PDF、图表图片与结构化交易流水，产出策略建议与风险监控结果。
+- **目标**：
+  - 自动抓取多源、多模态金融数据（>=3 种：文本新闻、PDF/表格、行情图片或K线截图、音频财报会记录）。
+  - 统一预处理与转换为向量/图谱存储，支撑技术面+基本面分析。
+  - 多智能体协作生成分析表格、可视化与多格式报告；监控风险并持续学习优化。
+
+## 2. 目录结构
+```
+config/                # 环境配置加载
+mcp/                   # MCP（Multi-Agent Communication Protocol）消息总线封装
+data/                  # 预处理与多模态解析
+chains/                # LangChain 相关链路（摄取、RAG、报告）
+agents/                # CrewAI 智能体定义
+orchestration/         # CrewAI 编排与流程
+scripts/run_demo.py    # 端到端演示入口
+```
+
+## 3. 系统架构设计
+### 3.1 多智能体架构
+```mermaid
+flowchart LR
+  subgraph Ingestion[数据层]
+    YF[行情抓取Agent]
+    NEWS[舆情新闻Agent]
+    PDF[财报PDF/表格Agent]
+    IMG[图像/OCR Agent]
+  end
+  subgraph Processing[处理层]
+    CLEAN[预处理与特征工程Agent]
+    KG[知识图谱构建Agent]
+    VDB[向量/RAG索引Agent]
+  end
+  subgraph Analysis[分析层]
+    TA[技术面策略Agent]
+    FA[基本面/估值Agent]
+    RISK[风险监控Agent]
+    REPORT[报告生成Agent]
+  end
+  subgraph Orchestration[编排层]
+    CREW[CrewAI Coordinator]
+  end
+
+  YF --> CLEAN
+  NEWS --> CLEAN
+  PDF --> CLEAN
+  IMG --> CLEAN
+  CLEAN --> KG --> VDB
+  VDB --> TA
+  VDB --> FA
+  VDB --> RISK
+  TA --> REPORT
+  FA --> REPORT
+  RISK --> REPORT
+  CREW <--> YF
+  CREW <--> NEWS
+  CREW <--> PDF
+  CREW <--> IMG
+  CREW <--> CLEAN
+  CREW <--> TA
+  CREW <--> FA
+  CREW <--> RISK
+  CREW <--> REPORT
+```
+- **设计模式**：采用 **Hand-off + Group Chat 混合**。市场数据与多模态解析 Agent 之间通过 Hand-off 分工；在策略生成与风险讨论阶段用 Group Chat 促进观点碰撞，最后由报告 Agent 汇总。
+- **通信机制**：
+  - 内部：使用 CrewAI 的任务队列与上下文传递；消息含任务描述、数据引用（向量存储ID/文件URI）与优先级。
+  - 智能体互通：统一使用 **MCP（Multi-Agent Communication Protocol）** 消息总线，封装 publish/subscribe 与 request/reply 语义，让行情、文档解析、OCR/ASR 等工具型 Agent 以通道（channel/topic）提供能力。
+
+### 3.2 LangChain 组件设计
+- **Chains（示例三个）**：
+  1) `IngestionChain`：通过 MCP 消息总线请求文档/媒体 → 解析器选择（新闻NLP、PDF表格抽取、OCR）→ 清洗 → 元数据封装。
+  2) `RagPipeline`：Routing 根据问题类型选择技术面/基本面/情绪检索器 → 向量/图谱混合检索 → LLM 生成结论 → Output Parser 结构化 JSON。
+  3) `ReportChain`：将分析结果、图表 URI、表格数据注入 Prompt Template → 生成 Markdown/PDF 报告；可调用工具生成可视化（matplotlib/plotly）。
+- **RAG 架构**：
+  - 数据分块：文本新闻（分句+时间窗）、PDF 表格（表格行块+数值向量）、图片/OCR（检测区域+文字）
+  - 嵌入：文本用金融领域嵌入模型，表格数值用数值特征哈希，图像用 CLIP 向量；统一存入向量库（Faiss/Chroma）并写入知识图谱（Neo4j）
+  - 检索：混合检索（向量+kNN on KG neighbors+BM25），按问题类型动态路由。
+- **Prompt Template & Output Parser**：
+  - Prompt 约束字段（分析摘要、关键驱动因素、风险、结论置信度、可执行动作）。
+  - Output Parser 使用 `PydanticOutputParser` 保证字段齐全并易于下游表格/监控消费。
+
+### 3.3 CrewAI 流程控制
+- **流程**：总体使用 **Hierarchical**（Coordinator → 子任务 Agent），在链路内局部 **Sequential**（如预处理→索引→分析）。
+- **任务 async 与依赖**：
+  - 数据抓取与多模态解析设为 `async=True` 并行执行；索引构建依赖全部完成。
+  - 分析 Agent（技术/基本面/风险）并行，报告 Agent 依赖其结果。
+- **监控与评估**：
+  - CrewAI 回调记录每步耗时/Token/异常；
+  - 结果评估通过自动指标（见 6.2）与人工抽样复核。
+
+## 4. 核心代码与模块
+### 4.1 环境配置（`config/settings.py`）
+集中管理 DeepSeek、MCP、向量库、Neo4j 等配置，并允许扩展多模态类型列表。
+
+### 4.2 MCP 消息总线封装（`mcp/clients.py`）
+- `MCPMessageBus`：最小化的多智能体通信封装，支持 channel 级 publish/subscribe 与 request/reply，用于智能体间传递任务和数据引用。
+- `MCPMarketClient`：基于消息总线的行情助手，消费 `market` channel 的流式 tick，并可请求历史数据。
+- `MCPDocumentClient`：基于消息总线的文档/多模态助手，通过 channel 调用下游 OCR/ASR/文件服务 Agent，返回 base64 内容或文本。
+- `normalize_documents`：将 MCP Agent 返回的统一结构转为 LangChain `Document` 友好格式。
+
+### 4.3 多模态预处理（`data/preprocess.py`）
+- `parse_pdf`/`parse_table`/`parse_image`/`parse_text`：支持 PDF、表格、图片(OCR)、纯文本解析。
+- `to_documents`：转为 LangChain `Document`，写入向量库与图谱。
+
+### 4.4 LangChain 链路
+- `chains/ingestion_chain.py`：
+  - 通过 MCP 消息总线向文档/OCR Agent 请求多模态内容，根据 MIME 类型选取解析器。
+  - 使用 DeepSeek LLM 对每份内容做 50 词中文摘要，返回结构化列表。
+- `chains/rag_chain.py`：
+  - `RAGPipeline.index`：分块、多向量写入 Chroma 与内存存储。
+  - `retrieve`：LLM 路由技术/基本面/情绪检索，结合压缩检索器降低幻觉。
+  - `summarize_answers`：强制引用证据并允许输出 UNKNOWN。
+- `chains/report_chain.py`：将表格、证据与图表链接填充模板，输出 Markdown 报告。
+
+### 4.5 智能体定义与编排
+- `agents/definitions.py`：新闻、PDF、图像解析 Agent + 技术/基本面/风险/报告 Agent 定义，明确角色、目标与委托策略。
+- `orchestration/crew_setup.py`：
+  - 使用 `Process.hierarchical` 编排，摄取任务并行，分析任务并行，报告任务依赖全部分析结果。
+  - `run_report` 将检索证据转成表格与图表列表，调用 `ReportChain` 输出报告。
+
+### 4.6 端到端示例（`scripts/run_demo.py`）
+演示通过 MCP 消息总线与工具型 Agent 交互、拉取多模态数据、构建 RAG、生成报告的完整流程，便于快速试跑与二次开发。
+
+## 5. MCP（Multi-Agent Communication Protocol）集成与 Agentic RAG
+- 至少部署 2 个 MCP 工具 Agent（行情、文档/OCR/ASR），通过消息总线暴露通道；统一认证与能力发现，可扩展更多工具 Agent。
+- 动态检索：问题路由技术/基本面/情绪，压缩检索减少噪声；图谱节点可扩展到关系检索。
+- 防幻觉：证据必须带来源/时间戳，Prompt 强制 Unknown，关键数值可二次校验（未在示例中执行，可按需扩展）。
+
+## 6. 性能优化与评估
+### 6.1 性能优化
+- 并行：CrewAI `async_execution` + `asyncio`，OCR/指标计算并行。
+- 批量：向量写入批量化；图谱写入可使用队列与回压。
+- 降级：关键 Agent 失败自动重试，必要时降级到缓存/备用源。
+
+### 6.2 质量评估
+- 指标：覆盖率（证据引用占比）、一致性（数值校验通过率）、可执行性（动作完整度）、延迟、成本。
+- 投资建议验证：回测收益/回撤、风险约束（VaR/波动率）、人工标注一致率。
+- 持续学习：记录用户评分与实际收益，更新检索重排权重与 Prompt，失效案例触发重训。
+
+## 7. 运行指南（DeepSeek + MCP）
+1. 安装依赖（示例）：
+   ```bash
+   pip install langchain langchain-openai crewai mcp httpx websockets pdfminer.six pillow pytesseract pandas numpy chromadb matplotlib
+   ```
+2. 配置环境变量 `.env`：
+   ```bash
+   export DEEPSEEK_API_KEY="sk-..."
+   export MCP_BUS_URL="wss://mcp-bus.example.com"
+   ```
+3. 启动 MCP 消息总线与工具型 Agent（行情、文档/OCR/ASR）。
+4. 运行示例：
+   ```bash
+   python scripts/run_demo.py
+   ```
+   输出包含 Markdown 报告，可重定向保存。
+
+## 8. 迭代与自我进化
+- 策略自学习：将报告与实际表现写入“策略表现库”，定期用 AutoGPT 类自检优化 Prompt/权重。
+- 动态角色调整：根据队列压力与市场波动调整 Agent 并发与权重。
+- 跨领域迁移：按行业相似度选择子图或微调 Adapter，将科技股经验迁移到新能源。
+
+## 9. 注意事项
+- 所有 LLM 输出需带来源引用与置信度；
+- 对外报告前执行合规/敏感词过滤；
+- 金融建议需附风险提示与回测结果；
+- 定期更新向量库与图谱，过期信息需标记衰减。
