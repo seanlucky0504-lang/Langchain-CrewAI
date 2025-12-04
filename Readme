@@ -127,7 +127,39 @@ flowchart LR
 演示通过 MCP 消息总线与工具型 Agent 交互、拉取多模态数据、构建 RAG、生成报告的完整流程，便于快速试跑与二次开发。
 
 ## 5. MCP（Multi-Agent Communication Protocol）集成与 Agentic RAG
-- 至少部署 2 个 MCP 工具 Agent（行情、文档/OCR/ASR），通过消息总线暴露通道；统一认证与能力发现，可扩展更多工具 Agent。
+### 5.1 MCP Server 设计与数据传输
+- **MCP-Market Server（Server #1）**：负责实时/历史行情与指标计算。
+  - **功能**：
+    - `market:stream` 频道提供股票/指数/ETF 的 tick 与 K 线（基于 WebSocket 推送）。
+    - `market:history` 请求-响应模式，支持按代码/区间拉取日线、分钟线与指标（MACD、RSI 等）并附带 `source` 标记（Yahoo、Bloomberg 等）。
+  - **数据传输**：消息采用 JSON 封装 `{channel, action, payload, ts, source}`；实时流使用 publish/subscribe，历史查询用 request/reply，均走同一消息总线。
+  - **推荐实现**：在 NATS/Redis Streams/Kafka 等消息中间件上实现轻量的 WebSocket Gateway，或直接使用开源 MCP WebSocket Hub（如 `mcp-ws-hub`）暴露 `market:*` 通道。
+
+- **MCP-Doc/OCR Server（Server #2）**：聚合文档、PDF 表格、图片、音频转写能力。
+  - **功能**：
+    - `doc:fetch` 请求-响应，统一下载外部链接/对象存储文件并返回 base64/URL。
+    - `doc:parse` 将文件路由到 OCR/ASR/表格抽取子模块，返回结构化文本、表格 JSON 与位置元数据。
+  - **数据传输**：同样使用 `{channel, action, payload, ts, content_type}` 结构；大文件建议返回临时 URL 并携带校验哈希，Agent 再按需拉取。
+  - **推荐实现**：可基于 FastAPI + WebSocket + `mcp-schema` 的消息 Envelope，或使用开源 OCR 服务（tesseract/rapidocr）与 ASR（whisper）组装成单一 MCP Server。
+
+### 5.2 统一访问外部数据源
+- **统一入口**：所有外部数据（Yahoo Finance、Bloomberg、交易所、对象存储、新闻 RSS）均通过 MCP Server 暴露的 channel/action 访问，应用侧只需调用 `MCPMessageBus.request("market:history", {...})` 或 `MCPMessageBus.request("doc:parse", {...})`，无需感知底层 API 差异。
+- **适配层**：在 MCP Server 内部为每个数据源实现 Connector（如 `YahooConnector`, `BloombergConnector`, `S3Connector`），输出统一规范：
+  ```json
+  {
+    "source": "yahoo",  // 数据来源标识
+    "symbol": "AAPL",
+    "range": "2023-01-01/2023-12-31",
+    "data": [ {"ts": 1704067200, "open": 180.1, "close": 182.3, ...} ],
+    "meta": {"currency": "USD", "exchange": "NASDAQ"}
+  }
+  ```
+- **优势**：
+  - **解耦**：业务 Agent 不需要持有各家 API Key/SDK，只依赖 MCP 通信协议；
+  - **可观察性**：消息总线可以集中记录请求/延迟/错误；
+  - **可扩展**：新增数据源只需在 MCP Server 增加 Connector 与 channel 映射，不影响调用方。
+
+### 5.3 Agentic RAG 策略
 - 动态检索：问题路由技术/基本面/情绪，压缩检索减少噪声；图谱节点可扩展到关系检索。
 - 防幻觉：证据必须带来源/时间戳，Prompt 强制 Unknown，关键数值可二次校验（未在示例中执行，可按需扩展）。
 
