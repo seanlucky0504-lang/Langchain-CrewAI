@@ -13,7 +13,7 @@ from mcp.clients import DocumentRequest, MCPDocumentClient
 
 
 class IngestionChain:
-    """Ingest multi-modal data from MCP and normalize into LangChain documents."""
+    """Ingest multi-modal data via MCP message bus and normalize into LangChain documents."""
 
     def __init__(self, doc_client: MCPDocumentClient, llm: ChatOpenAI) -> None:
         self.doc_client = doc_client

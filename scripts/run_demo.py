@@ -11,7 +11,7 @@ from chains.rag_chain import RAGPipeline
 from chains.report_chain import ReportChain
 from config.settings import load_settings
 from data.preprocess import ParsedModal
-from mcp.clients import DocumentRequest, MCPDocumentClient, MCPMarketClient
+from mcp.clients import DocumentRequest, MCPDocumentClient, MCPMarketClient, MCPMessageBus
 from orchestration.crew_setup import FinancialCrewFactory
 
 
@@ -32,8 +32,9 @@ async def main() -> None:
     settings = load_settings()
     llm = build_llm(settings)
 
-    doc_client = MCPDocumentClient(settings.mcp_doc_url)
-    market_client = MCPMarketClient(settings.mcp_market_url)
+    bus = MCPMessageBus(settings.mcp_bus_url)
+    doc_client = MCPDocumentClient(bus)
+    market_client = MCPMarketClient(bus)
 
     ingestion_chain = IngestionChain(doc_client, llm)
     rag = RAGPipeline(llm, persist_path=settings.vector_store_path)

@@ -9,8 +9,8 @@ class Settings:
 
     deepseek_api_key: str = os.getenv("DEEPSEEK_API_KEY", "")
     model: str = os.getenv("DEEPSEEK_MODEL", "deepseek-chat")
-    mcp_market_url: str = os.getenv("MCP_MARKET_URL", "wss://mcp.example.com/market")
-    mcp_doc_url: str = os.getenv("MCP_DOC_URL", "https://mcp.example.com/doc")
+    # Multi-Agent Communication Protocol (MCP) message bus endpoint
+    mcp_bus_url: str = os.getenv("MCP_BUS_URL", "wss://mcp-bus.example.com")
     vector_store_path: str = os.getenv("VECTOR_STORE_PATH", "./artifacts/vectorstore")
     neo4j_url: str = os.getenv("NEO4J_URL", "bolt://localhost:7687")
     neo4j_user: str = os.getenv("NEO4J_USER", "neo4j")

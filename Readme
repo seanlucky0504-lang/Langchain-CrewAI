@@ -12,7 +12,7 @@
 ## 2. 目录结构
 ```
 config/                # 环境配置加载
-mcp/                   # MCP 行情、文档客户端封装
+mcp/                   # MCP（Multi-Agent Communication Protocol）消息总线封装
 data/                  # 预处理与多模态解析
 chains/                # LangChain 相关链路（摄取、RAG、报告）
 agents/                # CrewAI 智能体定义
@@ -69,11 +69,11 @@ flowchart LR
 - **设计模式**：采用 **Hand-off + Group Chat 混合**。市场数据与多模态解析 Agent 之间通过 Hand-off 分工；在策略生成与风险讨论阶段用 Group Chat 促进观点碰撞，最后由报告 Agent 汇总。
 - **通信机制**：
   - 内部：使用 CrewAI 的任务队列与上下文传递；消息含任务描述、数据引用（向量存储ID/文件URI）与优先级。
-  - 外部：统一通过 MCP 协议访问数据服务与工具（如行情、数据库、存储）。
+  - 智能体互通：统一使用 **MCP（Multi-Agent Communication Protocol）** 消息总线，封装 publish/subscribe 与 request/reply 语义，让行情、文档解析、OCR/ASR 等工具型 Agent 以通道（channel/topic）提供能力。
 
 ### 3.2 LangChain 组件设计
 - **Chains（示例三个）**：
-  1) `IngestionChain`：从 MCP Source 取数据 → 解析器选择（新闻NLP、PDF表格抽取、OCR）→ 清洗 → 元数据封装。
+  1) `IngestionChain`：通过 MCP 消息总线请求文档/媒体 → 解析器选择（新闻NLP、PDF表格抽取、OCR）→ 清洗 → 元数据封装。
   2) `RagPipeline`：Routing 根据问题类型选择技术面/基本面/情绪检索器 → 向量/图谱混合检索 → LLM 生成结论 → Output Parser 结构化 JSON。
   3) `ReportChain`：将分析结果、图表 URI、表格数据注入 Prompt Template → 生成 Markdown/PDF 报告；可调用工具生成可视化（matplotlib/plotly）。
 - **RAG 架构**：
@@ -97,10 +97,11 @@ flowchart LR
 ### 4.1 环境配置（`config/settings.py`）
 集中管理 DeepSeek、MCP、向量库、Neo4j 等配置，并允许扩展多模态类型列表。
 
-### 4.2 MCP 客户端（`mcp/clients.py`）
-- `MCPMarketClient`：基于 WebSocket 订阅行情、HTTP 拉取历史数据。
-- `MCPDocumentClient`：统一 PDF/Excel/图片/音频的下载、OCR 与 ASR 调用。
-- `normalize_documents`：将 MCP 响应转为 LangChain 友好的结构。
+### 4.2 MCP 消息总线封装（`mcp/clients.py`）
+- `MCPMessageBus`：最小化的多智能体通信封装，支持 channel 级 publish/subscribe 与 request/reply，用于智能体间传递任务和数据引用。
+- `MCPMarketClient`：基于消息总线的行情助手，消费 `market` channel 的流式 tick，并可请求历史数据。
+- `MCPDocumentClient`：基于消息总线的文档/多模态助手，通过 channel 调用下游 OCR/ASR/文件服务 Agent，返回 base64 内容或文本。
+- `normalize_documents`：将 MCP Agent 返回的统一结构转为 LangChain `Document` 友好格式。
 
 ### 4.3 多模态预处理（`data/preprocess.py`）
 - `parse_pdf`/`parse_table`/`parse_image`/`parse_text`：支持 PDF、表格、图片(OCR)、纯文本解析。
@@ -108,7 +109,7 @@ flowchart LR
 
 ### 4.4 LangChain 链路
 - `chains/ingestion_chain.py`：
-  - 异步从 MCP 拉取文档，根据 MIME 类型选取解析器。
+  - 通过 MCP 消息总线向文档/OCR Agent 请求多模态内容，根据 MIME 类型选取解析器。
   - 使用 DeepSeek LLM 对每份内容做 50 词中文摘要，返回结构化列表。
 - `chains/rag_chain.py`：
   - `RAGPipeline.index`：分块、多向量写入 Chroma 与内存存储。
@@ -123,10 +124,10 @@ flowchart LR
   - `run_report` 将检索证据转成表格与图表列表，调用 `ReportChain` 输出报告。
 
 ### 4.6 端到端示例（`scripts/run_demo.py`）
-演示从 MCP 拉取多模态数据、构建 RAG、生成报告的完整流程，便于快速试跑与二次开发。
+演示通过 MCP 消息总线与工具型 Agent 交互、拉取多模态数据、构建 RAG、生成报告的完整流程，便于快速试跑与二次开发。
 
-## 5. MCP 集成与 Agentic RAG
-- 设计至少 2 个 MCP Server（行情、文档），统一认证与能力发现；使用 WebSocket + HTTP 混合，支持流式与批量。
+## 5. MCP（Multi-Agent Communication Protocol）集成与 Agentic RAG
+- 至少部署 2 个 MCP 工具 Agent（行情、文档/OCR/ASR），通过消息总线暴露通道；统一认证与能力发现，可扩展更多工具 Agent。
 - 动态检索：问题路由技术/基本面/情绪，压缩检索减少噪声；图谱节点可扩展到关系检索。
 - 防幻觉：证据必须带来源/时间戳，Prompt 强制 Unknown，关键数值可二次校验（未在示例中执行，可按需扩展）。
 
@@ -149,10 +150,9 @@ flowchart LR
 2. 配置环境变量 `.env`：
    ```bash
    export DEEPSEEK_API_KEY="sk-..."
-   export MCP_MARKET_URL="wss://mcp.example.com/market"
-   export MCP_DOC_URL="https://mcp.example.com/doc"
+   export MCP_BUS_URL="wss://mcp-bus.example.com"
    ```
-3. 启动 MCP servers（行情、文档/OCR/ASR）。
+3. 启动 MCP 消息总线与工具型 Agent（行情、文档/OCR/ASR）。
 4. 运行示例：
    ```bash
    python scripts/run_demo.py
